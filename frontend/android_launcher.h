@@ -26,6 +26,7 @@
 #include <SDL2/SDL_system.h>
 #endif
 #include <jni.h>
+#include "android_logger.h"
 
 #include "ui.h"
 
@@ -371,6 +372,7 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir, SDL_Wind
         if (selected >= 0 && selected < (int)games.size())
         {
             chosenRom = games[selected].rom;
+            AndroidLogger::Print("Launcher: Selected game [%d]: '%s' (path: %s)", selected, games[selected].name.c_str(), chosenRom.c_str());
             running = false;
         }
     };
@@ -674,6 +676,8 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir, SDL_Wind
     outWindow = window;
     outRenderer = renderer;
 
+    AndroidLogger::Print("Launcher: Exited loop. Window=%p, Renderer=%p, chosenRom='%s'", window, renderer, chosenRom.c_str());
+
     if (chosenRom.empty()) return false;
 
     // Detect game code
@@ -709,7 +713,28 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir, SDL_Wind
     static std::vector<char*> s_argv;
 
     s_args = { argc > 0 && argv[0] ? argv[0] : "pokemon-ds-wide", chosenRom,
-               "--save", savePath, "--fullscreen", "--jit" };
+               "--save", savePath, "--fullscreen" };
+
+    // Read JIT preference from settings.cfg (default 0 = INTERPRETER for stability)
+    bool useJit = false;
+    if (FILE* f = fopen(cfgPath.c_str(), "r"))
+    {
+        char buf[256];
+        while (fgets(buf, sizeof(buf), f))
+        {
+            if (strncmp(buf, "jit=", 4) == 0) useJit = (atoi(buf + 4) != 0);
+        }
+        fclose(f);
+    }
+
+    if (useJit)
+    {
+        s_args.push_back("--jit");
+    }
+    else
+    {
+        s_args.push_back("--interp");
+    }
 
     if (!foundCode.empty() && foundCode != "IPGE" && foundCode != "IPKE")
     {
@@ -722,6 +747,10 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir, SDL_Wind
     s_argv.push_back(nullptr);
     argc = (int)s_args.size();
     argv = s_argv.data();
+
+    AndroidLogger::Print("Launcher: Configured arguments (useJit=%d, foundCode='%s', savePath='%s')",
+                         useJit, foundCode.c_str(), savePath.c_str());
+    for (int i = 0; i < argc; i++) AndroidLogger::Print("  argv[%d] = %s", i, argv[i]);
 
     return true;
 }

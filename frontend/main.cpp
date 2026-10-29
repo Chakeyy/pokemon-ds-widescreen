@@ -34,6 +34,7 @@
 #ifdef __ANDROID__
 #include <atomic>
 #include <jni.h>
+#include "android_logger.h"
 #endif
 
 #include "NDS.h"
@@ -843,6 +844,9 @@ static void ApplyRenderer3D(NDS& nds, bool gpu)
 
 static std::unique_ptr<NDS> MakeConsole(const std::vector<uint8_t>& rom, const std::vector<uint8_t>& sav, bool fixedClock)
 {
+#ifdef __ANDROID__
+    AndroidLogger::Print("MakeConsole: Parsing cartridge (%zu bytes)...", rom.size());
+#endif
     // Black 2 and White 2 (US) get 8 MB of main RAM, for their wider map (frontend/bw2map.h).
     const bool largeMainRAM = Bw2Map::WantsLargeRAM(rom);
     NDSCart::NDSCartArgs cartArgs;
@@ -856,8 +860,14 @@ static std::unique_ptr<NDS> MakeConsole(const std::vector<uint8_t>& rom, const s
     if (!cart)
     {
         fprintf(stderr, "ROM rejected by the core\n");
+#ifdef __ANDROID__
+        AndroidLogger::Print("MakeConsole: NDSCart::ParseROM rejected ROM!");
+#endif
         return nullptr;
     }
+#ifdef __ANDROID__
+    AndroidLogger::Print("MakeConsole: ParseROM succeeded. Instantiating NDS (UseJit=%d)...", UseJit);
+#endif
     NDSArgs args;
     // melonDS's JIT only for a game that is not recompiled (--jit, Black 2).
     // SSR_JIT_NOFASTMEM=1: as on the Switch, where fast memory is not available, for testing.
@@ -869,15 +879,27 @@ static std::unique_ptr<NDS> MakeConsole(const std::vector<uint8_t>& rom, const s
     }
     else args.JIT = std::nullopt;
     auto nds = std::make_unique<NDS>(std::move(args));
+#ifdef __ANDROID__
+    AndroidLogger::Print("MakeConsole: NDS created. Setting cart and resetting...");
+#endif
 #ifdef JIT_ENABLED
     UseFastMem = UseJit && nds->JIT.FastMemoryEnabled();
 #endif
     nds->SetNDSCart(std::move(cart));
     nds->LargeMainRAM = largeMainRAM;
     nds->Reset();
+#ifdef __ANDROID__
+    AndroidLogger::Print("MakeConsole: Calling SetupDirectBoot...");
+#endif
     nds->SetupDirectBoot("game.nds");
     SetClock(*nds, fixedClock);
+#ifdef __ANDROID__
+    AndroidLogger::Print("MakeConsole: Calling nds->Start()...");
+#endif
     nds->Start();
+#ifdef __ANDROID__
+    AndroidLogger::Print("MakeConsole: nds->Start() complete!");
+#endif
     return nds;
 }
 
@@ -1461,19 +1483,24 @@ int main(int argc, char** argv)
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
 #ifdef __ANDROID__
+    const char* dir = SDL_AndroidGetInternalStoragePath();
+    if (dir) chdir(dir);
+    const char* ext = SDL_AndroidGetExternalStoragePath();
+    std::string stateDir = ext ? ext : (dir ? dir : ".");
+    AndroidLogger::Init(stateDir);
+    setenv("SSR_PERF", "1", 0);
+    setenv("SSR_JIT_NOFASTMEM", "1", 1);
+
     if (argc < 2)
     {
-        const char* dir = SDL_AndroidGetInternalStoragePath();
-        if (dir) chdir(dir);
-        const char* ext = SDL_AndroidGetExternalStoragePath();
-        if (!ext || !freopen((std::string(ext) + "/log.txt").c_str(), "w", stderr))
-            freopen("log.txt", "w", stderr);
-        setvbuf(stderr, nullptr, _IOLBF, 0);
-        setenv("SSR_PERF", "1", 0);
-        setenv("SSR_JIT_NOFASTMEM", "1", 1);
-
-        std::string stateDir = ext ? ext : (dir ? dir : ".");
-        if (!AndroidLauncher::Start(argc, argv, stateDir, window, renderer)) return 0;
+        AndroidLogger::Print("Opening AndroidLauncher...");
+        if (!AndroidLauncher::Start(argc, argv, stateDir, window, renderer))
+        {
+            AndroidLogger::Print("AndroidLauncher::Start returned false. Exiting.");
+            return 0;
+        }
+        AndroidLogger::Print("AndroidLauncher::Start succeeded. argc=%d", argc);
+        for (int i = 0; i < argc; i++) AndroidLogger::Print("  argv[%d] = %s", i, argv[i]);
     }
 #endif
 #ifdef __SWITCH__
@@ -1485,9 +1512,16 @@ int main(int argc, char** argv)
 #endif
     if (!ParseArgs(argc, argv, opt))
     {
+#ifdef __ANDROID__
+        AndroidLogger::Print("ParseArgs failed! argc=%d", argc);
+#endif
         Usage();
         return 2;
     }
+#ifdef __ANDROID__
+    AndroidLogger::Print("ParseArgs succeeded: rom='%s', save='%s', jit=%d, recomp=%d",
+                         opt.rom.c_str(), opt.save.c_str(), opt.jit, opt.recomp);
+#endif
     if (opt.jit)
     {
         UseJit = true;
@@ -1507,7 +1541,13 @@ int main(int argc, char** argv)
     }
 #endif
 
+#ifdef __ANDROID__
+    AndroidLogger::Print("Reading ROM: %s", opt.rom.c_str());
+#endif
     std::vector<uint8_t> rom = ReadFile(opt.rom);
+#ifdef __ANDROID__
+    AndroidLogger::Print("ROM read: %zu bytes", rom.size());
+#endif
     FuncWatch::RomPath = opt.rom; // (for a function table that reads its first bytes from it)
     // Pokemon SoulSilver (US): its new game's first menu is skipped (see where keys are sent).
     // (HeartGold too: the same game where it matters here.)
@@ -1516,12 +1556,15 @@ int main(int argc, char** argv)
     {
         fprintf(stderr, "cannot read ROM: %s\n", opt.rom.c_str());
 #ifdef __ANDROID__
+        AndroidLogger::Print("ERROR: Cannot read ROM: %s", opt.rom.c_str());
         ShowMessageScreen("POKEMON DS WIDESCREEN", {
             "CANNOT READ ROM FILE",
             "",
             opt.rom,
             "",
             "Please check file path and permissions.",
+            "",
+            "Log: /storage/emulated/0/pokemon_ds_log.txt",
             "",
             "Tap anywhere or press Back to exit"
         }, window, renderer);
@@ -1531,9 +1574,19 @@ int main(int argc, char** argv)
 #endif
     }
 
+#ifdef __ANDROID__
+    AndroidLogger::Print("Reading Save: %s", opt.save.c_str());
+#endif
     std::vector<uint8_t> sav = ReadFile(opt.save);
+#ifdef __ANDROID__
+    AndroidLogger::Print("Save read: %zu bytes", sav.size());
+    AndroidLogger::Print("Calling MakeConsole...");
+#endif
     fprintf(stderr, "ROM %s: %zu bytes; save %s: %zu bytes\n", opt.rom.c_str(), rom.size(), opt.save.c_str(), sav.size());
     auto nds = MakeConsole(rom, sav, opt.headless);
+#ifdef __ANDROID__
+    AndroidLogger::Print("MakeConsole result: %s", nds ? "SUCCESS" : "FAILED (nullptr)");
+#endif
     if (!nds)
     {
 #ifdef __ANDROID__
@@ -1542,6 +1595,8 @@ int main(int argc, char** argv)
             "",
             "The ROM was rejected by the core.",
             "Make sure it is an unmodified .nds ROM.",
+            "",
+            "Log: /storage/emulated/0/pokemon_ds_log.txt",
             "",
             "Tap anywhere or press Back to exit"
         }, window, renderer);
@@ -1892,9 +1947,15 @@ int main(int argc, char** argv)
         // (Its OpenGL context, which the 3D on the graphics chip hands back after each turn.)
         if (renderer) SsrSetSdlContext(window, SDL_GL_GetCurrentContext());
 #endif
+#ifdef __ANDROID__
+        AndroidLogger::Print("SDL Window & Renderer setup result: window=%p, renderer=%p", window, renderer);
+#endif
         if (!window || !renderer)
         {
             fprintf(stderr, "cannot create window: %s\n", SDL_GetError());
+#ifdef __ANDROID__
+            AndroidLogger::Print("ERROR: Cannot create window/renderer: %s", SDL_GetError());
+#endif
             return 1;
         }
         {
@@ -4296,8 +4357,19 @@ int main(int argc, char** argv)
         return t < nextTick ? (double)(nextTick - t) / perfFreq : 0.0;
     };
 
+#ifdef __ANDROID__
+    AndroidLogger::Print("Starting emulation main loop (while running)...");
+#endif
+
     while (running && !Host::StopRequested)
     {
+#ifdef __ANDROID__
+        static int s_loggedFrames = 0;
+        if (s_loggedFrames < 5)
+        {
+            AndroidLogger::Print("Emulating frame %d...", s_loggedFrames++);
+        }
+#endif
         if (timingFile)
         {
             // (Written before the summary below takes the waits' counters back to 0.)

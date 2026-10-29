@@ -16,6 +16,27 @@ public class MainActivity extends SDLActivity {
 
     public static volatile String sLatestPickedFolder = null;
 
+    @Override
+    protected void onCreate(android.os.Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override
+            public void uncaughtException(Thread t, Throwable e) {
+                try {
+                    File f = new File("/storage/emulated/0/pokemon_ds_log.txt");
+                    FileWriter fw = new FileWriter(f, true);
+                    fw.write("\n=== UNCAUGHT JAVA EXCEPTION ===\n");
+                    fw.write("Thread: " + t.getName() + "\n");
+                    fw.write("Exception: " + e.toString() + "\n");
+                    for (StackTraceElement ste : e.getStackTrace()) {
+                        fw.write("  at " + ste.toString() + "\n");
+                    }
+                    fw.close();
+                } catch (Exception ignored) {}
+            }
+        });
+    }
+
     public void openFolderPicker() {
         runOnUiThread(new Runnable() {
             @Override
