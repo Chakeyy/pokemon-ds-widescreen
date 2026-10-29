@@ -136,7 +136,6 @@ inline void OpenStorageSettings()
     jmethodID parseMethod = env->GetStaticMethodID(uriClass, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
     jobject uriObj = env->CallStaticObjectMethod(uriClass, parseMethod, jUriStr);
 
-    // Try MANAGE_APP_ALL_FILES_ACCESS_PERMISSION (Android 11+)
     jstring actionManage = env->NewStringUTF("android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION");
     jmethodID intentInit = env->GetMethodID(intentClass, "<init>", "(Ljava/lang/String;Landroid/net/Uri;)V");
     jobject intentObj = env->NewObject(intentClass, intentInit, actionManage, uriObj);
@@ -147,7 +146,6 @@ inline void OpenStorageSettings()
     if (env->ExceptionCheck())
     {
         env->ExceptionClear();
-        // Fallback: APPLICATION_DETAILS_SETTINGS
         jstring actionDetails = env->NewStringUTF("android.settings.APPLICATION_DETAILS_SETTINGS");
         jobject intentDetails = env->NewObject(intentClass, intentInit, actionDetails, uriObj);
         env->CallVoidMethod(activity, startActivityMethod, intentDetails);
@@ -160,357 +158,76 @@ inline void RequestStoragePermission()
     SDL_AndroidRequestPermission("android.permission.READ_EXTERNAL_STORAGE");
 }
 
-struct DirItem
+inline void OpenDocumentsUIFolder()
 {
-    std::string name;
-    std::string fullPath;
-    std::string label;
-    bool isDir = false;
-    uint32_t color = 0xFFFFFFFF;
-};
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (!env || !activity) return;
 
-// Interactive, touch-friendly directory browser with smooth dragging and accurate hitboxes
-inline std::string BrowseFolder(SDL_Window* window, SDL_Renderer* renderer, SDL_Texture* texture,
-                               Canvas& canvas, std::string& currentDir, const std::string& stateDir)
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID mid = env->GetMethodID(cls, "openFolderPicker", "()V");
+    if (mid)
+    {
+        env->CallVoidMethod(activity, mid);
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+inline void OpenDocumentsUIFile()
 {
-    RequestStoragePermission();
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (!env || !activity) return;
 
-    if (currentDir.empty() || access(currentDir.c_str(), R_OK) != 0)
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID mid = env->GetMethodID(cls, "openFilePicker", "()V");
+    if (mid)
     {
-        for (const char* p : { "/storage/emulated/0/Download", "/storage/emulated/0", "/sdcard" })
-        {
-            if (access(p, R_OK) == 0) { currentDir = p; break; }
-        }
+        env->CallVoidMethod(activity, mid);
     }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
 
-    std::vector<DirItem> items;
-    int scrollPixel = 0;
-    const int rowH = 54;
-    const int headerH = 72;
+inline std::string CheckDocumentsUIPickedFolder()
+{
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (!env || !activity) return "";
 
-    auto refreshDir = [&]() {
-        items.clear();
-        scrollPixel = 0;
+    jclass cls = env->GetObjectClass(activity);
+    jfieldID fid = env->GetStaticFieldID(cls, "sLatestPickedFolder", "Ljava/lang/String;");
+    if (!fid) { if (env->ExceptionCheck()) env->ExceptionClear(); return ""; }
 
-        if (currentDir != "/" && currentDir != "")
-        {
-            items.push_back({ "..", "", "[..]  PARENT DIRECTORY", true, 0xFFFFAA00 });
-        }
+    jstring jstr = (jstring)env->GetStaticObjectField(cls, fid);
+    if (!jstr) return "";
 
-        DIR* d = opendir(currentDir.c_str());
-        if (!d)
-        {
-            items.push_back({ "", "", "[ STORAGE PERMISSION NEEDED - TAP HERE ]", false, 0xFFFF4444 });
-            return;
-        }
+    const char* chars = env->GetStringUTFChars(jstr, nullptr);
+    std::string res = chars ? chars : "";
+    if (chars) env->ReleaseStringUTFChars(jstr, chars);
 
-        std::vector<DirItem> dirs;
-        std::vector<DirItem> files;
-        struct dirent* ep;
-        while ((ep = readdir(d)) != nullptr)
-        {
-            std::string n = ep->d_name;
-            if (n.empty() || n[0] == '.') continue;
-            std::string full = currentDir + (currentDir.back() == '/' ? "" : "/") + n;
-            struct stat s;
-            if (stat(full.c_str(), &s) == 0)
-            {
-                if (S_ISDIR(s.st_mode))
-                {
-                    dirs.push_back({ n, full, "[DIR]  " + n + "/", true, 0xFF66CCFF });
-                }
-                else if (Launcher::EndsWithNds(n))
-                {
-                    Launcher::Game g;
-                    std::string badge;
-                    uint32_t col = 0xFF55FF88;
-                    if (Launcher::ReadGame(full, currentDir, g))
-                    {
-                        if (const Launcher::KnownGame* k = Launcher::Known(g.code))
-                        {
-                            badge = std::string(" (") + k->name + " - " + g.code + ")";
-                            col = 0xFF00FFCC;
-                        }
-                        else if (!g.name.empty())
-                        {
-                            badge = std::string(" (") + g.name + ")";
-                        }
-                    }
-                    files.push_back({ n, full, "[ROM]  " + n + badge, false, col });
-                }
-            }
-        }
-        closedir(d);
+    env->SetStaticObjectField(cls, fid, nullptr);
+    return res;
+}
 
-        std::sort(dirs.begin(), dirs.end(), [](const DirItem& a, const DirItem& b) { return a.name < b.name; });
-        std::sort(files.begin(), files.end(), [](const DirItem& a, const DirItem& b) { return a.name < b.name; });
+inline std::string CheckDocumentsUIPickedRom()
+{
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (!env || !activity) return "";
 
-        for (auto& dir : dirs) items.push_back(std::move(dir));
-        for (auto& file : files) items.push_back(std::move(file));
-    };
+    jclass cls = env->GetObjectClass(activity);
+    jfieldID fid = env->GetStaticFieldID(cls, "sLatestPickedRom", "Ljava/lang/String;");
+    if (!fid) { if (env->ExceptionCheck()) env->ExceptionClear(); return ""; }
 
-    refreshDir();
+    jstring jstr = (jstring)env->GetStaticObjectField(cls, fid);
+    if (!jstr) return "";
 
-    bool running = true;
-    std::string chosenRom = "";
-    bool isDragging = false;
-    int touchStartX = 0, touchStartY = 0;
-    int startScrollPixel = 0;
-    Uint32 lastFingerTime = 0;
+    const char* chars = env->GetStringUTFChars(jstr, nullptr);
+    std::string res = chars ? chars : "";
+    if (chars) env->ReleaseStringUTFChars(jstr, chars);
 
-    auto getCanvasCoords = [&](int screenX, int screenY, int& outX, int& outY) {
-        int ww = 1, wh = 1;
-        SDL_GetWindowSize(window, &ww, &wh);
-        outX = screenX * 1280 / ww;
-        outY = screenY * 720 / wh;
-    };
-
-    auto handleTap = [&](int cx, int cy) {
-        // Top bar buttons
-        if (cy < headerH)
-        {
-            // [ USE THIS FOLDER ] button (x: 620..880, y: 12..60)
-            if (cx >= 620 && cx < 880)
-            {
-                // Save current folder
-                std::string romDirFile = stateDir + "/rom_dir.txt";
-                if (FILE* f = fopen(romDirFile.c_str(), "w"))
-                {
-                    fprintf(f, "%s\n", currentDir.c_str());
-                    fclose(f);
-                }
-                running = false;
-                return;
-            }
-            // [ ↰ PARENT ] button (x: 895..1060, y: 12..60)
-            if (cx >= 895 && cx < 1060)
-            {
-                if (currentDir != "/" && !currentDir.empty())
-                {
-                    size_t s = currentDir.find_last_of('/');
-                    currentDir = (s == 0) ? "/" : currentDir.substr(0, s);
-                    refreshDir();
-                }
-                return;
-            }
-            // [ BACK ] button (x: 1075..1250, y: 12..60)
-            if (cx >= 1075 && cx < 1250)
-            {
-                running = false;
-                return;
-            }
-            return;
-        }
-
-        // List item click
-        int clickedIdx = (cy - headerH + scrollPixel) / rowH;
-        if (clickedIdx >= 0 && clickedIdx < (int)items.size())
-        {
-            const auto& item = items[clickedIdx];
-            if (item.label.find("PERMISSION NEEDED") != std::string::npos)
-            {
-                OpenStorageSettings();
-                return;
-            }
-            if (item.isDir)
-            {
-                if (item.name == "..")
-                {
-                    size_t s = currentDir.find_last_of('/');
-                    currentDir = (s == 0) ? "/" : currentDir.substr(0, s);
-                }
-                else
-                {
-                    currentDir = item.fullPath;
-                }
-                refreshDir();
-            }
-            else
-            {
-                // Chosen ROM directly!
-                chosenRom = item.fullPath;
-                running = false;
-            }
-        }
-    };
-
-    while (running)
-    {
-        SDL_Event ev;
-        while (SDL_PollEvent(&ev))
-        {
-            if (ev.type == SDL_QUIT)
-            {
-                running = false;
-                break;
-            }
-
-            if (ev.type == SDL_KEYDOWN)
-            {
-                if (ev.key.keysym.sym == SDLK_ESCAPE || ev.key.keysym.sym == SDLK_AC_BACK)
-                {
-                    if (currentDir != "/" && currentDir != "/storage/emulated/0" && currentDir != "/storage")
-                    {
-                        size_t s = currentDir.find_last_of('/');
-                        currentDir = (s == 0) ? "/" : currentDir.substr(0, s);
-                        refreshDir();
-                    }
-                    else
-                    {
-                        running = false;
-                        break;
-                    }
-                }
-            }
-
-            // Finger touch events (normalized 0.0 to 1.0)
-            if (ev.type == SDL_FINGERDOWN)
-            {
-                lastFingerTime = SDL_GetTicks();
-                touchStartX = (int)(ev.tfinger.x * 1280.0f);
-                touchStartY = (int)(ev.tfinger.y * 720.0f);
-                startScrollPixel = scrollPixel;
-                isDragging = false;
-            }
-            else if (ev.type == SDL_FINGERMOTION)
-            {
-                lastFingerTime = SDL_GetTicks();
-                int cy = (int)(ev.tfinger.y * 720.0f);
-                int dy = cy - touchStartY;
-                if (!isDragging && (std::abs(dy) > 12 || std::abs((int)(ev.tfinger.x * 1280.0f) - touchStartX) > 12))
-                {
-                    isDragging = true;
-                }
-                if (isDragging)
-                {
-                    int maxScroll = std::max(0, (int)items.size() * rowH - (720 - headerH - 20));
-                    scrollPixel = std::max(0, std::min(maxScroll, startScrollPixel - dy));
-                }
-            }
-            else if (ev.type == SDL_FINGERUP)
-            {
-                lastFingerTime = SDL_GetTicks();
-                int cx = (int)(ev.tfinger.x * 1280.0f);
-                int cy = (int)(ev.tfinger.y * 720.0f);
-                if (!isDragging)
-                {
-                    handleTap(cx, cy);
-                }
-                isDragging = false;
-            }
-
-            // Mouse / Trackball / Controller Pointer
-            if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT)
-            {
-                if (SDL_GetTicks() - lastFingerTime > 150)
-                {
-                    int cx, cy;
-                    getCanvasCoords(ev.button.x, ev.button.y, cx, cy);
-                    touchStartX = cx;
-                    touchStartY = cy;
-                    startScrollPixel = scrollPixel;
-                    isDragging = false;
-                }
-            }
-            else if (ev.type == SDL_MOUSEMOTION && (ev.motion.state & SDL_BUTTON_LMASK))
-            {
-                if (SDL_GetTicks() - lastFingerTime > 150)
-                {
-                    int cx, cy;
-                    getCanvasCoords(ev.motion.x, ev.motion.y, cx, cy);
-                    int dy = cy - touchStartY;
-                    if (!isDragging && std::abs(dy) > 12) isDragging = true;
-                    if (isDragging)
-                    {
-                        int maxScroll = std::max(0, (int)items.size() * rowH - (720 - headerH - 20));
-                        scrollPixel = std::max(0, std::min(maxScroll, startScrollPixel - dy));
-                    }
-                }
-            }
-            else if (ev.type == SDL_MOUSEBUTTONUP && ev.button.button == SDL_BUTTON_LEFT)
-            {
-                if (SDL_GetTicks() - lastFingerTime > 150)
-                {
-                    int cx, cy;
-                    getCanvasCoords(ev.button.x, ev.button.y, cx, cy);
-                    if (!isDragging) handleTap(cx, cy);
-                    isDragging = false;
-                }
-            }
-            else if (ev.type == SDL_MOUSEWHEEL)
-            {
-                int maxScroll = std::max(0, (int)items.size() * rowH - (720 - headerH - 20));
-                scrollPixel = std::max(0, std::min(maxScroll, scrollPixel - ev.wheel.y * 50));
-            }
-        }
-
-        // Draw Browser Screen
-        canvas.Fill(0, 0, 1280, 720, 0xFF10121A);
-
-        // Header Bar
-        canvas.Fill(0, 0, 1280, headerH, 0xFF1C1F2B);
-        canvas.Fill(0, headerH - 2, 1280, 2, 0xFFE0242C);
-        canvas.Text(30, 14, "SELECT ROM OR FOLDER", 2, 0xFFFFFFFF);
-
-        std::string dispFolder = "DIR: " + currentDir;
-        if (Canvas::TextWidth(dispFolder, 1) > 560)
-        {
-            dispFolder = "..." + dispFolder.substr(dispFolder.size() - 48);
-        }
-        canvas.Text(30, 44, dispFolder, 1, 0xFF88BBFF);
-
-        // Header Buttons
-        // [ USE THIS FOLDER ]
-        canvas.Fill(620, 14, 260, 44, 0xFF1E6B38);
-        canvas.Text(635, 27, "USE THIS FOLDER", 1, 0xFFFFFFFF);
-
-        // [ ↰ PARENT ]
-        canvas.Fill(895, 14, 165, 44, 0xFF7A4A0A);
-        canvas.Text(915, 27, "^ PARENT", 1, 0xFFFFFFFF);
-
-        // [ BACK ]
-        canvas.Fill(1075, 14, 175, 44, 0xFF35394C);
-        canvas.Text(1125, 27, "BACK", 1, 0xFFFFFFFF);
-
-        // List Rows
-        for (int i = 0; i < (int)items.size(); i++)
-        {
-            int y = headerH + 6 + i * rowH - scrollPixel;
-            if (y + rowH < headerH || y > 720) continue;
-
-            const auto& item = items[i];
-            uint32_t bg = (i % 2 == 0) ? 0xFF181B26 : 0xFF1F2230;
-            canvas.Fill(20, y, 1240, rowH - 4, bg);
-
-            std::string label = item.label;
-            if (Canvas::TextWidth(label, 2) > 1200)
-            {
-                while (!label.empty() && Canvas::TextWidth(label + "...", 2) > 1200)
-                    label.pop_back();
-                label += "...";
-            }
-            canvas.Text(36, y + 15, label, 2, item.color);
-        }
-
-        // Scrollbar Indicator
-        int totalH = (int)items.size() * rowH;
-        int viewH = 720 - headerH;
-        if (totalH > viewH)
-        {
-            int barH = std::max(30, viewH * viewH / totalH);
-            int barY = headerH + (scrollPixel * (viewH - barH)) / (totalH - viewH);
-            canvas.Fill(1270, barY, 6, barH, 0xFFE0242C);
-        }
-
-        SDL_UpdateTexture(texture, nullptr, canvas.px.data(), 1280 * 4);
-        SDL_RenderClear(renderer);
-        SDL_RenderCopy(renderer, texture, nullptr, nullptr);
-        SDL_RenderPresent(renderer);
-
-        SDL_Delay(16);
-    }
-
-    return chosenRom;
+    env->SetStaticObjectField(cls, fid, nullptr);
+    return res;
 }
 
 inline std::vector<Launcher::Game> ScanAllAndroidGames(const std::string& userDir, const std::string& stateDir)
@@ -660,22 +377,6 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
         }
     };
 
-    auto openBrowser = [&]() {
-        std::string picked = BrowseFolder(window, renderer, texture, canvas, userRomDir, stateDir);
-        if (!picked.empty())
-        {
-            chosenRom = picked;
-            running = false;
-        }
-        else
-        {
-            games = ScanAllAndroidGames(userRomDir, stateDir);
-            selected = 0;
-            first = 0;
-            note = "";
-        }
-    };
-
     auto handleLauncherTap = [&](int cx, int cy) {
         if (showSettings)
         {
@@ -698,33 +399,30 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
             return;
         }
 
-        // Bottom action bar
+        // Bottom action bar (y >= 650)
         if (cy >= 650)
         {
-            // [ CHOOSE FOLDER ] (x: 30..270)
-            if (cx >= 30 && cx < 270)
+            // [ CHOOSE FOLDER ] (x: 25..245) -> Opens DocumentsUI
+            if (cx >= 25 && cx < 245)
             {
-                openBrowser();
+                OpenDocumentsUIFolder();
                 return;
             }
-            // [ SETTINGS ] (x: 285..460)
-            if (cx >= 285 && cx < 460)
+            // [ OPEN ROM FILE ] (x: 255..475) -> Opens DocumentsUI for single ROM
+            if (cx >= 255 && cx < 475)
+            {
+                OpenDocumentsUIFile();
+                return;
+            }
+            // [ SETTINGS ] (x: 485..630)
+            if (cx >= 485 && cx < 630)
             {
                 showSettings = !showSettings;
                 if (showSettings) settingsPage.Open(cfgPath);
                 return;
             }
-            // [ RESCAN ] (x: 475..630)
-            if (cx >= 475 && cx < 630)
-            {
-                games = ScanAllAndroidGames(userRomDir, stateDir);
-                selected = 0;
-                first = 0;
-                note = games.empty() ? "NO ROMS FOUND" : "SCANNED " + std::to_string(games.size()) + " GAMES";
-                return;
-            }
-            // [ PLAY: ... ] (x: 645..1250)
-            if (cx >= 645 && cx < 1250 && !games.empty())
+            // [ PLAY: ... ] (x: 645..1255)
+            if (cx >= 645 && cx < 1255 && !games.empty())
             {
                 launchSelected();
                 return;
@@ -750,12 +448,19 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
         }
         else
         {
-            // Empty state buttons
-            if (cy >= 360 && cy < 430 && cx >= 340 && cx < 940)
+            // Empty state buttons:
+            // [ CHOOSE ROM FOLDER (DocumentsUI) ]
+            if (cy >= 320 && cy < 385 && cx >= 300 && cx < 980)
             {
-                openBrowser();
+                OpenDocumentsUIFolder();
             }
-            else if (cy >= 450 && cy < 520 && cx >= 340 && cx < 940)
+            // [ OPEN SPECIFIC .NDS ROM FILE ]
+            else if (cy >= 400 && cy < 465 && cx >= 300 && cx < 980)
+            {
+                OpenDocumentsUIFile();
+            }
+            // [ GRANT STORAGE ACCESS ]
+            else if (cy >= 480 && cy < 545 && cx >= 300 && cx < 980)
             {
                 OpenStorageSettings();
             }
@@ -764,6 +469,25 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
 
     while (running)
     {
+        // Check if DocumentsUI picked a folder or ROM in the background
+        std::string pickedRom = CheckDocumentsUIPickedRom();
+        if (!pickedRom.empty())
+        {
+            chosenRom = pickedRom;
+            running = false;
+            break;
+        }
+
+        std::string pickedFolder = CheckDocumentsUIPickedFolder();
+        if (!pickedFolder.empty() && pickedFolder != userRomDir)
+        {
+            userRomDir = pickedFolder;
+            games = ScanAllAndroidGames(userRomDir, stateDir);
+            selected = 0;
+            first = 0;
+            note = games.empty() ? "NO ROMS FOUND IN FOLDER" : "LOADED " + std::to_string(games.size()) + " GAMES";
+        }
+
         SDL_Event ev;
         while (SDL_PollEvent(&ev))
         {
@@ -794,7 +518,7 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
                 }
             }
 
-            // Finger touch
+            // Finger touch (normalized 0.0 to 1.0)
             if (ev.type == SDL_FINGERUP)
             {
                 lastFingerTime = SDL_GetTicks();
@@ -863,20 +587,24 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
             canvas.Fill(0, 65, 1280, 2, 0xFFE0242C);
             canvas.Text(40, 18, "POKEMON DS WIDESCREEN", 3, 0xFFFFFFFF);
 
-            canvas.Fill(240, 160, 800, 440, 0xFF141620);
-            canvas.Fill(238, 158, 804, 2, 0xFFE0242C);
+            canvas.Fill(220, 120, 840, 500, 0xFF141620);
+            canvas.Fill(218, 118, 844, 2, 0xFFE0242C);
 
-            canvas.Text(360, 200, "NO POKEMON NDS ROMS FOUND", 2, 0xFFFFFFFF);
-            canvas.Text(300, 250, "Place your .nds files in /storage/emulated/0/Download", 1, 0xFFAAAAAA);
-            canvas.Text(340, 280, "or tap below to choose where your ROMs are stored.", 1, 0xFFAAAAAA);
+            canvas.Text(360, 160, "NO POKEMON NDS ROMS FOUND", 2, 0xFFFFFFFF);
+            canvas.Text(270, 210, "Use Android DocumentsUI below to choose your ROM folder", 1, 0xFFAAAAAA);
+            canvas.Text(270, 235, "or pick a specific .nds ROM file directly.", 1, 0xFFAAAAAA);
 
             // Button 1: Choose Folder
-            canvas.Fill(340, 360, 600, 60, 0xFF1E6B38);
-            canvas.Text(450, 380, "CHOOSE ROM FOLDER", 2, 0xFFFFFFFF);
+            canvas.Fill(300, 320, 680, 55, 0xFF1E6B38);
+            canvas.Text(380, 338, "CHOOSE ROM FOLDER (DocumentsUI)", 2, 0xFFFFFFFF);
 
-            // Button 2: Grant Storage Access
-            canvas.Fill(340, 450, 600, 60, 0xFF2B3D66);
-            canvas.Text(410, 470, "GRANT STORAGE ACCESS PERMISSION", 1, 0xFF88CCFF);
+            // Button 2: Choose File
+            canvas.Fill(300, 400, 680, 55, 0xFF1C4268);
+            canvas.Text(390, 418, "OPEN SPECIFIC .NDS ROM FILE", 2, 0xFFFFFFFF);
+
+            // Button 3: Grant Storage Access
+            canvas.Fill(300, 480, 680, 55, 0xFF2B3D66);
+            canvas.Text(430, 498, "GRANT STORAGE ACCESS PERMISSION", 1, 0xFF88CCFF);
         }
         else
         {
@@ -891,16 +619,16 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
             canvas.Fill(0, 649, 1280, 2, 0xFF2A2D3C);
 
             // [ CHOOSE FOLDER ]
-            canvas.Fill(30, 660, 240, 48, 0xFF1C4268);
-            canvas.Text(65, 676, "CHOOSE FOLDER", 1, 0xFFFFFFFF);
+            canvas.Fill(25, 660, 220, 48, 0xFF1C4268);
+            canvas.Text(55, 676, "CHOOSE FOLDER", 1, 0xFFFFFFFF);
+
+            // [ OPEN ROM FILE ]
+            canvas.Fill(255, 660, 220, 48, 0xFF1E4E58);
+            canvas.Text(285, 676, "OPEN ROM FILE", 1, 0xFFFFFFFF);
 
             // [ SETTINGS ]
-            canvas.Fill(285, 660, 175, 48, 0xFF2A2E3D);
-            canvas.Text(325, 676, "SETTINGS", 1, 0xFFFFFFFF);
-
-            // [ RESCAN ]
-            canvas.Fill(475, 660, 155, 48, 0xFF5C4018);
-            canvas.Text(515, 676, "RESCAN", 1, 0xFFFFFFFF);
+            canvas.Fill(485, 660, 145, 48, 0xFF2A2E3D);
+            canvas.Text(515, 676, "SETTINGS", 1, 0xFFFFFFFF);
 
             // [ PLAY: GAME NAME ]
             std::string playLabel = "PLAY";
@@ -914,7 +642,7 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
                     playLabel.pop_back();
                 playLabel += "...";
             }
-            canvas.Fill(645, 660, 605, 48, 0xFF1E6B38);
+            canvas.Fill(645, 660, 610, 48, 0xFF1E6B38);
             canvas.Text(665, 674, playLabel, 2, 0xFFFFFFFF);
         }
 

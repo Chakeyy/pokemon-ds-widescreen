@@ -71,11 +71,11 @@ ninja -C "$BUILD_DIR" ssrecomp
 
 # 3. Update skeleton if Android SDK build-tools are present
 SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-if [ -n "$SDK_DIR" ] && [ -f "$SDK_DIR/build-tools/34.0.0/aapt2" ] && [ -d "$DEPS_DIR/SDL2-$SDL_VERSION" ]; then
-    echo "== Updating skeleton.apk with updated AndroidManifest.xml"
+if [ -n "$SDK_DIR" ] && [ -d "$SDK_DIR/build-tools" ] && [ -d "$DEPS_DIR/SDL2-$SDL_VERSION" ]; then
+    echo "== Updating skeleton.apk with DocumentsUI MainActivity"
     python3 -m pip install pillow --quiet || true
     chmod +x tools/android/make_skeleton.sh
-    tools/android/make_skeleton.sh "$SDK_DIR" "$DEPS_DIR/SDL2-$SDL_VERSION" || echo "Note: make_skeleton skipped"
+    tools/android/make_skeleton.sh "$SDK_DIR" "$DEPS_DIR/SDL2-$SDL_VERSION"
 fi
 
 # 4. Pack APK using python
