@@ -2,6 +2,7 @@
 <!-- The app around the Android build: SDL's own activity loads libSDL2.so and libmain.so
      (the game). Compiled into tools/android/skeleton.apk by make_skeleton.sh. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     package="io.github.clickingmaster.ssrecomp"
     android:versionCode="203"
     android:versionName="0.2.3"
@@ -16,19 +17,22 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Only to ask GitHub for the newest release at start. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
 
     <application
-        android:label="SoulSilver"
+        android:label="Pokemon DS Widescreen"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
         android:isGame="true"
         android:appCategory="game"
         android:extractNativeLibs="true"
         android:hardwareAccelerated="true"
+        android:requestLegacyExternalStorage="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
         <activity
             android:name="org.libsdl.app.SDLActivity"
-            android:label="SoulSilver"
+            android:label="Pokemon DS Widescreen"
             android:alwaysRetainTaskState="true"
             android:launchMode="singleInstance"
             android:screenOrientation="sensorLandscape"
@@ -41,6 +45,16 @@
             </intent-filter>
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" />
+                <data android:scheme="content" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.nds" />
+                <data android:host="*" />
             </intent-filter>
         </activity>
     </application>

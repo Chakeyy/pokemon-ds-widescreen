@@ -69,7 +69,16 @@ cmake -S . -B "$BUILD_DIR" -G Ninja \
 
 ninja -C "$BUILD_DIR" ssrecomp
 
-# 3. Pack APK using python
+# 3. Update skeleton if Android SDK build-tools are present
+SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+if [ -n "$SDK_DIR" ] && [ -f "$SDK_DIR/build-tools/34.0.0/aapt2" ] && [ -d "$DEPS_DIR/SDL2-$SDL_VERSION" ]; then
+    echo "== Updating skeleton.apk with updated AndroidManifest.xml"
+    python3 -m pip install pillow --quiet || true
+    chmod +x tools/android/make_skeleton.sh
+    tools/android/make_skeleton.sh "$SDK_DIR" "$DEPS_DIR/SDL2-$SDL_VERSION" || echo "Note: make_skeleton skipped"
+fi
+
+# 4. Pack APK using python
 echo "== Packaging APK: $OUT_APK"
 KEY_PATH="${KEY_PATH:-$HERE/tools/android/signing-key.json}"
 python3 tools/android/apk.py \
