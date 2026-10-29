@@ -13,10 +13,8 @@ import java.io.FileWriter;
 public class MainActivity extends SDLActivity {
     private static final String TAG = "PokemonDS";
     public static final int REQUEST_CODE_FOLDER = 9901;
-    public static final int REQUEST_CODE_FILE = 9902;
 
     public static volatile String sLatestPickedFolder = null;
-    public static volatile String sLatestPickedRom = null;
 
     public void openFolderPicker() {
         runOnUiThread(new Runnable() {
@@ -30,24 +28,6 @@ public class MainActivity extends SDLActivity {
                     startActivityForResult(intent, REQUEST_CODE_FOLDER);
                 } catch (Exception e) {
                     Log.e(TAG, "Error launching ACTION_OPEN_DOCUMENT_TREE: " + e.getMessage());
-                }
-            }
-        });
-    }
-
-    public void openFilePicker() {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                    intent.addCategory(Intent.CATEGORY_OPENABLE);
-                    intent.setType("*/*");
-                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                  | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-                    startActivityForResult(intent, REQUEST_CODE_FILE);
-                } catch (Exception e) {
-                    Log.e(TAG, "Error launching ACTION_OPEN_DOCUMENT: " + e.getMessage());
                 }
             }
         });
@@ -70,9 +50,6 @@ public class MainActivity extends SDLActivity {
             if (requestCode == REQUEST_CODE_FOLDER) {
                 String treeDocId = DocumentsContract.getTreeDocumentId(uri);
                 fullPath = resolveDocId(treeDocId);
-            } else if (requestCode == REQUEST_CODE_FILE) {
-                String docId = DocumentsContract.getDocumentId(uri);
-                fullPath = resolveDocId(docId);
             }
         } catch (Exception e) {
             Log.e(TAG, "Error resolving Document ID: " + e.getMessage());
@@ -99,16 +76,6 @@ public class MainActivity extends SDLActivity {
                     fw.close();
                 } catch (Exception e) {
                     Log.e(TAG, "Failed writing rom_dir.txt: " + e.getMessage());
-                }
-            } else if (requestCode == REQUEST_CODE_FILE) {
-                sLatestPickedRom = fullPath;
-                try {
-                    File f = new File(stateDir, "last_rom.txt");
-                    FileWriter fw = new FileWriter(f);
-                    fw.write(fullPath + "\n");
-                    fw.close();
-                } catch (Exception e) {
-                    Log.e(TAG, "Failed writing last_rom.txt: " + e.getMessage());
                 }
             }
         }

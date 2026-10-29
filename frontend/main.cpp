@@ -1458,6 +1458,8 @@ static bool ReadSnapshot(NDS& nds, const std::string& path, uint32_t* frame)
 int main(int argc, char** argv)
 {
     Options opt;
+    SDL_Window* window = nullptr;
+    SDL_Renderer* renderer = nullptr;
 #ifdef __ANDROID__
     if (argc < 2)
     {
@@ -1468,9 +1470,10 @@ int main(int argc, char** argv)
             freopen("log.txt", "w", stderr);
         setvbuf(stderr, nullptr, _IOLBF, 0);
         setenv("SSR_PERF", "1", 0);
+        setenv("SSR_JIT_NOFASTMEM", "1", 1);
 
         std::string stateDir = ext ? ext : (dir ? dir : ".");
-        if (!AndroidLauncher::Start(argc, argv, stateDir)) return 0;
+        if (!AndroidLauncher::Start(argc, argv, stateDir, window, renderer)) return 0;
     }
 #endif
 #ifdef __SWITCH__
@@ -1521,7 +1524,7 @@ int main(int argc, char** argv)
             "Please check file path and permissions.",
             "",
             "Tap anywhere or press Back to exit"
-        });
+        }, window, renderer);
         return 0;
 #else
         return 1;
@@ -1541,7 +1544,7 @@ int main(int argc, char** argv)
             "Make sure it is an unmodified .nds ROM.",
             "",
             "Tap anywhere or press Back to exit"
-        });
+        }, window, renderer);
         return 0;
 #else
         return 1;
@@ -1787,8 +1790,6 @@ int main(int argc, char** argv)
     // SSR_EMU_PROF=1 (--env SSR_EMU_PROF=1 in a test run) adds where the emulation's time went
     // (melonDS/src/SsrProf.h).
     SsrProf::On = perfOn && getenv("SSR_EMU_PROF") != nullptr;
-    SDL_Window* window = nullptr;
-    SDL_Renderer* renderer = nullptr;
     SDL_Texture* tex[2] = { nullptr, nullptr };
     SDL_Texture* overlayTex = nullptr;
     int overlayTexW = 0, overlayTexH = 0;
@@ -1832,10 +1833,17 @@ int main(int argc, char** argv)
         SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON, "1");
         SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON_SMALL, "1");
         #endif
-        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0)
+        if (!SDL_WasInit(SDL_INIT_VIDEO))
         {
-            fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
-            return 1;
+            if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0)
+            {
+                fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+                return 1;
+            }
+        }
+        else
+        {
+            SDL_InitSubSystem(SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
         }
         int w, h;
         LayoutNativeSize(layout, w, h);
@@ -1851,13 +1859,16 @@ int main(int argc, char** argv)
         gameTitle = PcLauncher::GameName();
         if (!gameTitle.empty()) windowTitle = gameTitle.c_str();
 #endif
-        window = SDL_CreateWindow(windowTitle, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-            w, h,
-            SDL_WINDOW_RESIZABLE |
+        if (!window)
+        {
+            window = SDL_CreateWindow(windowTitle, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                w, h,
+                SDL_WINDOW_RESIZABLE |
 #ifdef __APPLE__
-            SDL_WINDOW_ALLOW_HIGHDPI |
+                SDL_WINDOW_ALLOW_HIGHDPI |
 #endif
-            (cfg.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
+                (cfg.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
+        }
         // The OpenGL ES renderer uploads the picture several times faster than SDL's default
         // (desktop OpenGL) on the machines this was measured on. SDL_RENDER_DRIVER overrides.
         // Not on Windows: there OpenGL ES can come with a framebuffer that converts to sRGB,
@@ -1867,17 +1878,20 @@ int main(int argc, char** argv)
 #elif !defined(_WIN32)
         if (!getenv("SDL_RENDER_DRIVER")) SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengles2");
 #endif
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+        if (!renderer && window)
+        {
+            renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+            if (!renderer)
+            {
+                fprintf(stderr, "SDL accelerated renderer failed: %s; trying fallback\n", SDL_GetError());
+                SDL_SetHint(SDL_HINT_RENDER_DRIVER, "");
+                renderer = SDL_CreateRenderer(window, -1, 0);
+            }
+        }
 #ifdef SSR_GPU3D
         // (Its OpenGL context, which the 3D on the graphics chip hands back after each turn.)
         if (renderer) SsrSetSdlContext(window, SDL_GL_GetCurrentContext());
 #endif
-        if (!renderer)
-        {
-            fprintf(stderr, "SDL accelerated renderer failed: %s; trying fallback\n", SDL_GetError());
-            SDL_SetHint(SDL_HINT_RENDER_DRIVER, "");
-            renderer = SDL_CreateRenderer(window, -1, 0);
-        }
         if (!window || !renderer)
         {
             fprintf(stderr, "cannot create window: %s\n", SDL_GetError());

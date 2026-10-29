@@ -41,22 +41,33 @@
 namespace AndroidLauncher
 {
 
-inline void ShowMessageScreen(const std::string& title, const std::vector<std::string>& lines)
+inline void ShowMessageScreen(const std::string& title, const std::vector<std::string>& lines, SDL_Window* window = nullptr, SDL_Renderer* renderer = nullptr)
 {
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) return;
-    SDL_Window* window = SDL_CreateWindow("Pokemon DS Widescreen",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
+    if (!SDL_WasInit(SDL_INIT_VIDEO))
+    {
+        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) return;
+    }
+    bool createdLocally = false;
+    if (!window)
+    {
+        window = SDL_CreateWindow("Pokemon DS Widescreen",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
+        createdLocally = true;
+    }
     if (!window) return;
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    if (!renderer) renderer = SDL_CreateRenderer(window, -1, 0);
-    if (!renderer) { SDL_DestroyWindow(window); return; }
+    if (!renderer)
+    {
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+        if (!renderer) renderer = SDL_CreateRenderer(window, -1, 0);
+    }
+    if (!renderer) { if (createdLocally) SDL_DestroyWindow(window); return; }
 
     SDL_RenderSetLogicalSize(renderer, 1280, 720);
 
     SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
         SDL_TEXTUREACCESS_STREAMING, 1280, 720);
-    if (!tex) { SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); return; }
+    if (!tex) { if (createdLocally) { SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); } return; }
 
     Canvas canvas;
     canvas.Resize(1280, 720);
@@ -110,8 +121,11 @@ inline void ShowMessageScreen(const std::string& title, const std::vector<std::s
     }
 
     SDL_DestroyTexture(tex);
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
+    if (createdLocally)
+    {
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+    }
 }
 
 inline void OpenStorageSettings()
@@ -173,21 +187,6 @@ inline void OpenDocumentsUIFolder()
     if (env->ExceptionCheck()) env->ExceptionClear();
 }
 
-inline void OpenDocumentsUIFile()
-{
-    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
-    jobject activity = (jobject)SDL_AndroidGetActivity();
-    if (!env || !activity) return;
-
-    jclass cls = env->GetObjectClass(activity);
-    jmethodID mid = env->GetMethodID(cls, "openFilePicker", "()V");
-    if (mid)
-    {
-        env->CallVoidMethod(activity, mid);
-    }
-    if (env->ExceptionCheck()) env->ExceptionClear();
-}
-
 inline std::string CheckDocumentsUIPickedFolder()
 {
     JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
@@ -196,27 +195,6 @@ inline std::string CheckDocumentsUIPickedFolder()
 
     jclass cls = env->GetObjectClass(activity);
     jfieldID fid = env->GetStaticFieldID(cls, "sLatestPickedFolder", "Ljava/lang/String;");
-    if (!fid) { if (env->ExceptionCheck()) env->ExceptionClear(); return ""; }
-
-    jstring jstr = (jstring)env->GetStaticObjectField(cls, fid);
-    if (!jstr) return "";
-
-    const char* chars = env->GetStringUTFChars(jstr, nullptr);
-    std::string res = chars ? chars : "";
-    if (chars) env->ReleaseStringUTFChars(jstr, chars);
-
-    env->SetStaticObjectField(cls, fid, nullptr);
-    return res;
-}
-
-inline std::string CheckDocumentsUIPickedRom()
-{
-    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
-    jobject activity = (jobject)SDL_AndroidGetActivity();
-    if (!env || !activity) return "";
-
-    jclass cls = env->GetObjectClass(activity);
-    jfieldID fid = env->GetStaticFieldID(cls, "sLatestPickedRom", "Ljava/lang/String;");
     if (!fid) { if (env->ExceptionCheck()) env->ExceptionClear(); return ""; }
 
     jstring jstr = (jstring)env->GetStaticObjectField(cls, fid);
@@ -290,7 +268,7 @@ inline std::vector<Launcher::Game> ScanAllAndroidGames(const std::string& userDi
     return games;
 }
 
-inline bool Start(int& argc, char**& argv, const std::string& stateDir)
+inline bool Start(int& argc, char**& argv, const std::string& stateDir, SDL_Window*& outWindow, SDL_Renderer*& outRenderer)
 {
     RequestStoragePermission();
 
@@ -324,22 +302,40 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
         fclose(f);
     }
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) < 0) return false;
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
 
-    SDL_Window* window = SDL_CreateWindow("Pokemon DS Widescreen",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
-    if (!window) return false;
+    if (!SDL_WasInit(SDL_INIT_VIDEO))
+    {
+        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) < 0) return false;
+    }
 
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    if (!renderer) renderer = SDL_CreateRenderer(window, -1, 0);
-    if (!renderer) { SDL_DestroyWindow(window); return false; }
+    SDL_Window* window = outWindow;
+    SDL_Renderer* renderer = outRenderer;
+
+    if (!window)
+    {
+        window = SDL_CreateWindow("Pokemon DS Widescreen",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
+        if (!window) return false;
+    }
+
+    if (!renderer)
+    {
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+        if (!renderer) renderer = SDL_CreateRenderer(window, -1, 0);
+        if (!renderer) { SDL_DestroyWindow(window); return false; }
+    }
 
     SDL_RenderSetLogicalSize(renderer, 1280, 720);
 
     SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
         SDL_TEXTUREACCESS_STREAMING, 1280, 720);
-    if (!texture) { SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); return false; }
+    if (!texture) { return false; }
 
     Canvas canvas;
     canvas.Resize(1280, 720);
@@ -361,6 +357,8 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
 
     std::string note = "";
     Uint32 lastFingerTime = 0;
+    float fingerDownX = 0.0f, fingerDownY = 0.0f;
+    bool isDragging = false;
 
     auto getCanvasCoords = [&](int screenX, int screenY, int& outX, int& outY) {
         int ww = 1, wh = 1;
@@ -380,13 +378,11 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
     auto handleLauncherTap = [&](int cx, int cy) {
         if (showSettings)
         {
-            // Tap top-right back button
             if (cx >= 1100 && cy <= 60)
             {
                 showSettings = false;
                 return;
             }
-            // Navigate settings item
             if (cy >= 60 && cy < 660)
             {
                 int itemIdx = settingsPage.scroll + (cy - 60) / 48;
@@ -402,27 +398,21 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
         // Bottom action bar (y >= 650)
         if (cy >= 650)
         {
-            // [ CHOOSE FOLDER ] (x: 25..245) -> Opens DocumentsUI
-            if (cx >= 25 && cx < 245)
+            // [ CHOOSE FOLDER ] (x: 40..300) -> Opens DocumentsUI
+            if (cx >= 40 && cx < 300)
             {
                 OpenDocumentsUIFolder();
                 return;
             }
-            // [ OPEN ROM FILE ] (x: 255..475) -> Opens DocumentsUI for single ROM
-            if (cx >= 255 && cx < 475)
-            {
-                OpenDocumentsUIFile();
-                return;
-            }
-            // [ SETTINGS ] (x: 485..630)
-            if (cx >= 485 && cx < 630)
+            // [ SETTINGS ] (x: 320..480)
+            if (cx >= 320 && cx < 480)
             {
                 showSettings = !showSettings;
                 if (showSettings) settingsPage.Open(cfgPath);
                 return;
             }
-            // [ PLAY: ... ] (x: 645..1255)
-            if (cx >= 645 && cx < 1255 && !games.empty())
+            // [ PLAY: ... ] (x: 500..1240)
+            if (cx >= 500 && cx < 1240 && !games.empty())
             {
                 launchSelected();
                 return;
@@ -450,17 +440,12 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
         {
             // Empty state buttons:
             // [ CHOOSE ROM FOLDER (DocumentsUI) ]
-            if (cy >= 320 && cy < 385 && cx >= 300 && cx < 980)
+            if (cy >= 320 && cy < 400 && cx >= 300 && cx < 980)
             {
                 OpenDocumentsUIFolder();
             }
-            // [ OPEN SPECIFIC .NDS ROM FILE ]
-            else if (cy >= 400 && cy < 465 && cx >= 300 && cx < 980)
-            {
-                OpenDocumentsUIFile();
-            }
             // [ GRANT STORAGE ACCESS ]
-            else if (cy >= 480 && cy < 545 && cx >= 300 && cx < 980)
+            else if (cy >= 430 && cy < 510 && cx >= 300 && cx < 980)
             {
                 OpenStorageSettings();
             }
@@ -469,15 +454,7 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
 
     while (running)
     {
-        // Check if DocumentsUI picked a folder or ROM in the background
-        std::string pickedRom = CheckDocumentsUIPickedRom();
-        if (!pickedRom.empty())
-        {
-            chosenRom = pickedRom;
-            running = false;
-            break;
-        }
-
+        // Check if DocumentsUI picked a folder in the background
         std::string pickedFolder = CheckDocumentsUIPickedFolder();
         if (!pickedFolder.empty() && pickedFolder != userRomDir)
         {
@@ -519,12 +496,52 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
             }
 
             // Finger touch (normalized 0.0 to 1.0)
-            if (ev.type == SDL_FINGERUP)
+            if (ev.type == SDL_FINGERDOWN)
             {
-                lastFingerTime = SDL_GetTicks();
-                int cx = (int)(ev.tfinger.x * 1280.0f);
-                int cy = (int)(ev.tfinger.y * 720.0f);
-                handleLauncherTap(cx, cy);
+                fingerDownX = ev.tfinger.x;
+                fingerDownY = ev.tfinger.y;
+                isDragging = false;
+            }
+            else if (ev.type == SDL_FINGERMOTION)
+            {
+                float dy = ev.tfinger.y - fingerDownY;
+                float dx = ev.tfinger.x - fingerDownX;
+                if (fabsf(dy) > 0.05f || fabsf(dx) > 0.05f)
+                {
+                    isDragging = true;
+                    if (fabsf(dy) > 0.05f)
+                    {
+                        if (showSettings)
+                        {
+                            settingsPage.Move(dy > 0 ? -1 : 1);
+                            fingerDownY = ev.tfinger.y;
+                        }
+                        else if (!games.empty())
+                        {
+                            int cols = (int)games.size() > 6 ? 4 : 3;
+                            if (dy > 0 && selected >= cols) { selected -= cols; fingerDownY = ev.tfinger.y; }
+                            else if (dy < 0 && selected + cols < (int)games.size()) { selected += cols; fingerDownY = ev.tfinger.y; }
+                            else if (dy > 0) { selected = 0; fingerDownY = ev.tfinger.y; }
+                            else if (dy < 0) { selected = (int)games.size() - 1; fingerDownY = ev.tfinger.y; }
+                        }
+                    }
+                    else if (fabsf(dx) > 0.05f && !showSettings && !games.empty())
+                    {
+                        if (dx > 0 && selected > 0) { selected--; fingerDownX = ev.tfinger.x; }
+                        else if (dx < 0 && selected + 1 < (int)games.size()) { selected++; fingerDownX = ev.tfinger.x; }
+                    }
+                }
+            }
+            else if (ev.type == SDL_FINGERUP)
+            {
+                if (!isDragging)
+                {
+                    lastFingerTime = SDL_GetTicks();
+                    int cx = (int)(ev.tfinger.x * 1280.0f);
+                    int cy = (int)(ev.tfinger.y * 720.0f);
+                    handleLauncherTap(cx, cy);
+                }
+                isDragging = false;
             }
 
             // Mouse click
@@ -587,24 +604,20 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
             canvas.Fill(0, 65, 1280, 2, 0xFFE0242C);
             canvas.Text(40, 18, "POKEMON DS WIDESCREEN", 3, 0xFFFFFFFF);
 
-            canvas.Fill(220, 120, 840, 500, 0xFF141620);
-            canvas.Fill(218, 118, 844, 2, 0xFFE0242C);
+            canvas.Fill(220, 140, 840, 460, 0xFF141620);
+            canvas.Fill(218, 138, 844, 2, 0xFFE0242C);
 
-            canvas.Text(360, 160, "NO POKEMON NDS ROMS FOUND", 2, 0xFFFFFFFF);
-            canvas.Text(270, 210, "Use Android DocumentsUI below to choose your ROM folder", 1, 0xFFAAAAAA);
-            canvas.Text(270, 235, "or pick a specific .nds ROM file directly.", 1, 0xFFAAAAAA);
+            canvas.Text(360, 180, "NO POKEMON NDS ROMS FOUND", 2, 0xFFFFFFFF);
+            canvas.Text(270, 230, "Use Android DocumentsUI below to choose your ROM folder.", 1, 0xFFAAAAAA);
+            canvas.Text(270, 255, "All Pokemon DS games in that folder will appear here.", 1, 0xFFAAAAAA);
 
             // Button 1: Choose Folder
-            canvas.Fill(300, 320, 680, 55, 0xFF1E6B38);
-            canvas.Text(380, 338, "CHOOSE ROM FOLDER (DocumentsUI)", 2, 0xFFFFFFFF);
+            canvas.Fill(300, 330, 680, 65, 0xFF1E6B38);
+            canvas.Text(380, 353, "CHOOSE ROM FOLDER (DocumentsUI)", 2, 0xFFFFFFFF);
 
-            // Button 2: Choose File
-            canvas.Fill(300, 400, 680, 55, 0xFF1C4268);
-            canvas.Text(390, 418, "OPEN SPECIFIC .NDS ROM FILE", 2, 0xFFFFFFFF);
-
-            // Button 3: Grant Storage Access
-            canvas.Fill(300, 480, 680, 55, 0xFF2B3D66);
-            canvas.Text(430, 498, "GRANT STORAGE ACCESS PERMISSION", 1, 0xFF88CCFF);
+            // Button 2: Grant Storage Access
+            canvas.Fill(300, 430, 680, 65, 0xFF2B3D66);
+            canvas.Text(430, 453, "GRANT STORAGE ACCESS PERMISSION", 1, 0xFF88CCFF);
         }
         else
         {
@@ -619,16 +632,12 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
             canvas.Fill(0, 649, 1280, 2, 0xFF2A2D3C);
 
             // [ CHOOSE FOLDER ]
-            canvas.Fill(25, 660, 220, 48, 0xFF1C4268);
-            canvas.Text(55, 676, "CHOOSE FOLDER", 1, 0xFFFFFFFF);
-
-            // [ OPEN ROM FILE ]
-            canvas.Fill(255, 660, 220, 48, 0xFF1E4E58);
-            canvas.Text(285, 676, "OPEN ROM FILE", 1, 0xFFFFFFFF);
+            canvas.Fill(40, 660, 260, 48, 0xFF1C4268);
+            canvas.Text(80, 676, "CHOOSE FOLDER", 1, 0xFFFFFFFF);
 
             // [ SETTINGS ]
-            canvas.Fill(485, 660, 145, 48, 0xFF2A2E3D);
-            canvas.Text(515, 676, "SETTINGS", 1, 0xFFFFFFFF);
+            canvas.Fill(320, 660, 160, 48, 0xFF2A2E3D);
+            canvas.Text(360, 676, "SETTINGS", 1, 0xFFFFFFFF);
 
             // [ PLAY: GAME NAME ]
             std::string playLabel = "PLAY";
@@ -636,14 +645,14 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
             {
                 playLabel = "PLAY: " + games[selected].name;
             }
-            if (Canvas::TextWidth(playLabel, 2) > 560)
+            if (Canvas::TextWidth(playLabel, 2) > 680)
             {
-                while (!playLabel.empty() && Canvas::TextWidth(playLabel + "...", 2) > 560)
+                while (!playLabel.empty() && Canvas::TextWidth(playLabel + "...", 2) > 680)
                     playLabel.pop_back();
                 playLabel += "...";
             }
-            canvas.Fill(645, 660, 610, 48, 0xFF1E6B38);
-            canvas.Text(665, 674, playLabel, 2, 0xFFFFFFFF);
+            canvas.Fill(500, 660, 740, 48, 0xFF1E6B38);
+            canvas.Text(530, 674, playLabel, 2, 0xFFFFFFFF);
         }
 
         SDL_UpdateTexture(texture, nullptr, canvas.px.data(), 1280 * 4);
@@ -654,9 +663,16 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
         SDL_Delay(16);
     }
 
+    // Clean up only the texture and logical size, keep window & renderer alive!
     SDL_DestroyTexture(texture);
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
+    SDL_RenderSetLogicalSize(renderer, 0, 0);
+
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+    SDL_RenderPresent(renderer);
+
+    outWindow = window;
+    outRenderer = renderer;
 
     if (chosenRom.empty()) return false;
 
@@ -667,6 +683,7 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
         if (fseek(f, 0x0C, SEEK_SET) == 0) (void)fread(code, 1, 4, f);
         fclose(f);
     }
+    code[4] = '\0';
     std::string foundCode = code;
 
     // Save chosen ROM as last played
@@ -700,6 +717,7 @@ inline bool Start(int& argc, char**& argv, const std::string& stateDir)
         s_args.push_back("data/funcs/" + foundCode + ".txt");
     }
 
+    s_argv.clear();
     for (auto& a : s_args) s_argv.push_back(a.data());
     s_argv.push_back(nullptr);
     argc = (int)s_args.size();
