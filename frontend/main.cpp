@@ -1483,10 +1483,10 @@ int main(int argc, char** argv)
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
 #ifdef __ANDROID__
-    const char* dir = SDL_AndroidGetInternalStoragePath();
-    if (dir) chdir(dir);
-    const char* ext = SDL_AndroidGetExternalStoragePath();
-    std::string stateDir = ext ? ext : (dir ? dir : ".");
+    const char* internalDir = SDL_AndroidGetInternalStoragePath();
+    if (internalDir) chdir(internalDir);
+    const char* externalDir = SDL_AndroidGetExternalStoragePath();
+    std::string stateDir = externalDir ? externalDir : (internalDir ? internalDir : ".");
     AndroidLogger::Init(stateDir);
     setenv("SSR_PERF", "1", 0);
     setenv("SSR_JIT_NOFASTMEM", "1", 1);
