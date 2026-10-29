@@ -884,9 +884,16 @@ ARMJIT_Memory::ARMJIT_Memory(melonDS::NDS& nds) : NDS(nds)
     else
     {
         int fd = open(ASHMEM_DEVICE, O_RDWR);
-        ioctl(fd, ASHMEM_SET_NAME, "melondsfastmem");
-        ioctl(fd, ASHMEM_SET_SIZE, MemoryTotalSize);
-        MemoryFile = fd;
+        if (fd >= 0)
+        {
+            ioctl(fd, ASHMEM_SET_NAME, "melondsfastmem");
+            ioctl(fd, ASHMEM_SET_SIZE, MemoryTotalSize);
+            MemoryFile = fd;
+        }
+        else
+        {
+            MemoryFile = -1;
+        }
     }
 #else
     char fastmemPidName[snprintf(NULL, 0, "/melondsfastmem%d", getpid()) + 1];
@@ -898,12 +905,33 @@ ARMJIT_Memory::ARMJIT_Memory(melonDS::NDS& nds) : NDS(nds)
     }
     shm_unlink(fastmemPidName);
 #endif
-    if (ftruncate(MemoryFile, MemoryTotalSize) < 0)
+    if (MemoryFile != -1)
     {
-        Log(LogLevel::Error, "Failed to allocate memory using ftruncate! (%s)", strerror(errno));
+        if (ftruncate(MemoryFile, MemoryTotalSize) < 0)
+        {
+            Log(LogLevel::Error, "Failed to allocate memory using ftruncate! (%s)", strerror(errno));
+        }
+
+        void* mapped = mmap(MemoryBase, MemoryTotalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, MemoryFile, 0);
+        if (mapped == MAP_FAILED)
+        {
+            Log(LogLevel::Error, "Failed to mmap MemoryBase with MemoryFile! (%s)", strerror(errno));
+            MemoryFile = -1;
+        }
     }
 
-    mmap(MemoryBase, MemoryTotalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, MemoryFile, 0);
+    if (MemoryFile == -1)
+    {
+        // Shared file memory is unavailable (e.g. on Android where ashmem is restricted, or when fastmem is disabled).
+        // Ensure MemoryBase has PROT_READ | PROT_WRITE so melonDS MainRAM, VRAM, and BIOS are usable!
+        if (mprotect(MemoryBase, MemoryTotalSize, PROT_READ | PROT_WRITE) < 0)
+        {
+            munmap(MemoryBase, VirtmemAreaSize);
+            MemoryBase = (u8*)mmap(nullptr, MemoryTotalSize, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+        }
+        FastMem9Start = nullptr;
+        FastMem7Start = nullptr;
+    }
 #endif
 #if defined(__SWITCH__)
     // (FastMem9Start and FastMem7Start are set by SetUpSwitchFastMem.)

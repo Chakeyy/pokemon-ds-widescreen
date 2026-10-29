@@ -7,6 +7,9 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
 
 #include "Platform.h"
 #include "SPI_Firmware.h"
@@ -208,8 +211,14 @@ void Addon_RumbleStart(u32, void*) {}
 void Addon_RumbleStop(void*) {}
 float Addon_MotionQuery(MotionQueryType, void*) { return 0.0f; }
 
+#ifdef _WIN32
 DynamicLibrary* DynamicLibrary_Load(const char*) { return nullptr; }
 void DynamicLibrary_Unload(DynamicLibrary*) {}
 void* DynamicLibrary_LoadFunction(DynamicLibrary*, const char*) { return nullptr; }
+#else
+DynamicLibrary* DynamicLibrary_Load(const char* lib) { return (DynamicLibrary*)dlopen(lib, RTLD_NOW); }
+void DynamicLibrary_Unload(DynamicLibrary* lib) { if (lib) dlclose(lib); }
+void* DynamicLibrary_LoadFunction(DynamicLibrary* lib, const char* name) { return lib ? dlsym((void*)lib, name) : nullptr; }
+#endif
 
 }
