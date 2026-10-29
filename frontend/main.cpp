@@ -1451,29 +1451,467 @@ static bool ReadSnapshot(NDS& nds, const std::string& path, uint32_t* frame)
     return true;
 }
 
+#ifdef __ANDROID__
+#include <dirent.h>
+#include <sys/stat.h>
+
+struct FileEntry
+{
+    std::string name;
+    std::string display;
+    bool isDir;
+    uint32_t color;
+};
+
+static void ShowMessageScreen(const std::string& title, const std::vector<std::string>& lines)
+{
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) return;
+    SDL_Window* window = SDL_CreateWindow("Pokemon DS Widescreen",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
+    if (!window) return;
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if (!renderer) renderer = SDL_CreateRenderer(window, -1, 0);
+    if (!renderer) { SDL_DestroyWindow(window); return; }
+
+    SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING, 1280, 720);
+    if (!tex) { SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); return; }
+
+    Canvas canvas;
+    canvas.Resize(1280, 720);
+    canvas.Fill(0, 0, 1280, 720, 0xFF101018);
+
+    int y = 50;
+    auto put = [&](const std::string& str, uint32_t col = 0xFFFFFFFF, int scale = 2) {
+        int tw = Canvas::TextWidth(str, scale);
+        canvas.Text((1280 - tw) / 2, y, str, scale, col);
+        y += 18 * scale;
+    };
+
+    put(title, 0xFFFF4444, 3);
+    y += 20;
+    for (const auto& l : lines)
+    {
+        if (l.empty()) { y += 14; continue; }
+        uint32_t c = 0xFFCCCCCC;
+        if (l.find("/sdcard") != std::string::npos || l.find("/storage") != std::string::npos)
+            c = 0xFF00E5FF;
+        else if (l.find("Pokemon") != std::string::npos || l.find("Tap anywhere") != std::string::npos)
+            c = 0xFFFFFFFF;
+        put(l, c, 2);
+    }
+
+    void* pixels = nullptr;
+    int pitch = 0;
+    if (SDL_LockTexture(tex, nullptr, &pixels, &pitch) == 0)
+    {
+        memcpy(pixels, canvas.px.data(), 1280 * 720 * 4);
+        SDL_UnlockTexture(tex);
+    }
+    SDL_RenderClear(renderer);
+    SDL_RenderCopy(renderer, tex, nullptr, nullptr);
+    SDL_RenderPresent(renderer);
+
+    bool running = true;
+    while (running)
+    {
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev))
+        {
+            if (ev.type == SDL_QUIT || ev.type == SDL_FINGERDOWN ||
+                ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_KEYDOWN)
+            {
+                running = false;
+                break;
+            }
+        }
+        SDL_Delay(50);
+    }
+
+    SDL_DestroyTexture(tex);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+}
+
+static std::string PickRomScreen(const std::string& initialDir, const std::string& stateDir)
+{
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) return "";
+    SDL_Window* window = SDL_CreateWindow("Pokemon DS Widescreen",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
+    if (!window) return "";
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if (!renderer) renderer = SDL_CreateRenderer(window, -1, 0);
+    if (!renderer) { SDL_DestroyWindow(window); return ""; }
+
+    SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING, 1280, 720);
+    if (!tex) { SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); return ""; }
+
+    Canvas canvas;
+    canvas.Resize(1280, 720);
+
+    std::string lastRomPath;
+    std::string lastRomFile = stateDir + "/last_rom.txt";
+    if (FILE* f = fopen(lastRomFile.c_str(), "r"))
+    {
+        char buf[1024];
+        if (fgets(buf, sizeof(buf), f))
+        {
+            lastRomPath = buf;
+            while (!lastRomPath.empty() && (lastRomPath.back() == '\n' || lastRomPath.back() == '\r'))
+                lastRomPath.pop_back();
+        }
+        fclose(f);
+    }
+
+    std::string curDir = initialDir;
+    if (!lastRomPath.empty())
+    {
+        size_t slash = lastRomPath.find_last_of('/');
+        if (slash != std::string::npos)
+        {
+            std::string d = lastRomPath.substr(0, slash);
+            struct stat st;
+            if (stat(d.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+                curDir = d;
+        }
+    }
+    struct stat st;
+    if (stat(curDir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+        curDir = "/storage/emulated/0";
+    if (stat(curDir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+        curDir = "/sdcard";
+
+    int scrollOffset = 0;
+    int selectedIndex = 0;
+    std::vector<FileEntry> entries;
+
+    auto checkPokemon = [](const std::string& path) -> std::string {
+        FILE* f = fopen(path.c_str(), "rb");
+        if (!f) return "";
+        char code[5] = {};
+        if (fseek(f, 0x0C, SEEK_SET) == 0 && fread(code, 1, 4, f) == 4)
+        {
+            fclose(f);
+            if (memcmp(code, "IREO", 4) == 0) return "Black 2 (IREO)";
+            if (memcmp(code, "IRDO", 4) == 0) return "White 2 (IRDO)";
+            if (memcmp(code, "IRBO", 4) == 0) return "Black (IRBO)";
+            if (memcmp(code, "IRAO", 4) == 0) return "White (IRAO)";
+            if (memcmp(code, "CPUE", 4) == 0) return "Platinum (CPUE)";
+            if (memcmp(code, "IPGE", 4) == 0) return "SoulSilver (IPGE)";
+            if (memcmp(code, "IPKE", 4) == 0) return "HeartGold (IPKE)";
+            return std::string("NDS (") + code + ")";
+        }
+        fclose(f);
+        return "";
+    };
+
+    auto loadEntries = [&]() {
+        entries.clear();
+        scrollOffset = 0;
+        selectedIndex = 0;
+
+        if (curDir != "/" && curDir != "")
+        {
+            entries.push_back({ "..", "[..] (Parent Directory)", true, 0xFFFFAA00 });
+        }
+
+        DIR* d = opendir(curDir.c_str());
+        if (!d)
+        {
+            entries.push_back({ "..", "[Permission Denied - Tap ..]", true, 0xFFFF4444 });
+            return;
+        }
+
+        std::vector<FileEntry> dirs;
+        std::vector<FileEntry> files;
+
+        struct dirent* ep;
+        while ((ep = readdir(d)) != nullptr)
+        {
+            std::string name = ep->d_name;
+            if (name.empty() || name[0] == '.') continue;
+            std::string full = curDir + (curDir.back() == '/' ? "" : "/") + name;
+            struct stat s;
+            if (stat(full.c_str(), &s) == 0)
+            {
+                if (S_ISDIR(s.st_mode))
+                {
+                    dirs.push_back({ name, std::string("[DIR]  ") + name + "/", true, 0xFF66BBFF });
+                }
+                else if (name.size() > 4 &&
+                    (name.substr(name.size() - 4) == ".nds" || name.substr(name.size() - 4) == ".NDS"))
+                {
+                    std::string tag = checkPokemon(full);
+                    uint32_t col = 0xFF55FF55;
+                    std::string disp = std::string("[ROM]  ") + name;
+                    if (!tag.empty())
+                    {
+                        disp += "  (" + tag + ")";
+                        col = 0xFF00FFCC;
+                    }
+                    files.push_back({ name, disp, false, col });
+                }
+            }
+        }
+        closedir(d);
+
+        std::sort(dirs.begin(), dirs.end(), [](const FileEntry& a, const FileEntry& b) {
+            return a.name < b.name;
+        });
+        std::sort(files.begin(), files.end(), [](const FileEntry& a, const FileEntry& b) {
+            return a.name < b.name;
+        });
+
+        for (auto& dirEntry : dirs) entries.push_back(std::move(dirEntry));
+        for (auto& fileEntry : files) entries.push_back(std::move(fileEntry));
+    };
+
+    loadEntries();
+
+    std::string chosenRom;
+    bool running = true;
+    const int itemH = 46;
+    const int startY = 130;
+    const int maxVisible = 10;
+
+    while (running)
+    {
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev))
+        {
+            if (ev.type == SDL_QUIT)
+            {
+                running = false;
+                break;
+            }
+            if (ev.type == SDL_KEYDOWN)
+            {
+                if (ev.key.keysym.sym == SDLK_ESCAPE || ev.key.keysym.sym == SDLK_AC_BACK)
+                {
+                    if (curDir != "/" && curDir != "/storage/emulated/0" && curDir != "/storage")
+                    {
+                        size_t s = curDir.find_last_of('/');
+                        curDir = (s == 0) ? "/" : curDir.substr(0, s);
+                        loadEntries();
+                    }
+                    else { running = false; break; }
+                }
+                else if (ev.key.keysym.sym == SDLK_UP)
+                {
+                    if (selectedIndex > 0) selectedIndex--;
+                    if (selectedIndex < scrollOffset) scrollOffset = selectedIndex;
+                }
+                else if (ev.key.keysym.sym == SDLK_DOWN)
+                {
+                    if (selectedIndex + 1 < (int)entries.size()) selectedIndex++;
+                    if (selectedIndex >= scrollOffset + maxVisible) scrollOffset = selectedIndex - maxVisible + 1;
+                }
+                else if (ev.key.keysym.sym == SDLK_RETURN || ev.key.keysym.sym == SDLK_SPACE)
+                {
+                    if (selectedIndex >= 0 && selectedIndex < (int)entries.size())
+                    {
+                        const auto& ent = entries[selectedIndex];
+                        if (ent.isDir)
+                        {
+                            if (ent.name == "..")
+                            {
+                                size_t s = curDir.find_last_of('/');
+                                curDir = (s == 0) ? "/" : curDir.substr(0, s);
+                            }
+                            else
+                            {
+                                curDir = curDir + (curDir.back() == '/' ? "" : "/") + ent.name;
+                            }
+                            loadEntries();
+                        }
+                        else
+                        {
+                            chosenRom = curDir + (curDir.back() == '/' ? "" : "/") + ent.name;
+                            running = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (ev.type == SDL_MOUSEWHEEL)
+            {
+                scrollOffset -= ev.wheel.y * 2;
+                if (scrollOffset < 0) scrollOffset = 0;
+                if (scrollOffset + maxVisible > (int)entries.size())
+                    scrollOffset = std::max(0, (int)entries.size() - maxVisible);
+            }
+            if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT)
+            {
+                int mx = ev.button.x, my = ev.button.y;
+
+                if (!lastRomPath.empty() && my >= 70 && my < 115 && mx >= 40 && mx < 800)
+                {
+                    chosenRom = lastRomPath;
+                    running = false;
+                    break;
+                }
+
+                if (mx >= 1160 && mx < 1260)
+                {
+                    if (my >= 130 && my < 250)
+                    {
+                        scrollOffset = std::max(0, scrollOffset - 4);
+                    }
+                    else if (my >= 550 && my < 670)
+                    {
+                        if (scrollOffset + maxVisible < (int)entries.size())
+                            scrollOffset = std::min((int)entries.size() - maxVisible, scrollOffset + 4);
+                    }
+                }
+
+                if (my >= startY && my < startY + maxVisible * itemH && mx >= 40 && mx < 1140)
+                {
+                    int clickedIdx = scrollOffset + (my - startY) / itemH;
+                    if (clickedIdx >= 0 && clickedIdx < (int)entries.size())
+                    {
+                        const auto& ent = entries[clickedIdx];
+                        if (ent.isDir)
+                        {
+                            if (ent.name == "..")
+                            {
+                                size_t s = curDir.find_last_of('/');
+                                curDir = (s == 0) ? "/" : curDir.substr(0, s);
+                            }
+                            else
+                            {
+                                curDir = curDir + (curDir.back() == '/' ? "" : "/") + ent.name;
+                            }
+                            loadEntries();
+                        }
+                        else
+                        {
+                            chosenRom = curDir + (curDir.back() == '/' ? "" : "/") + ent.name;
+                            running = false;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        canvas.Fill(0, 0, 1280, 720, 0xFF14151E);
+
+        canvas.Fill(0, 0, 1280, 65, 0xFF202330);
+        canvas.Text(40, 12, "POKEMON DS WIDESCREEN - SELECT GAME", 2, 0xFFFF4444);
+        std::string pathText = "FOLDER: " + curDir;
+        if (Canvas::TextWidth(pathText, 1) > 750)
+            pathText = "..." + pathText.substr(pathText.size() - 55);
+        canvas.Text(40, 42, pathText, 1, 0xFF88AAFF);
+
+        if (!lastRomPath.empty())
+        {
+            canvas.Fill(40, 72, 740, 36, 0xFF1D3525);
+            std::string resumeLabel = "RESUME: " + lastRomPath.substr(lastRomPath.find_last_of('/') + 1);
+            if (Canvas::TextWidth(resumeLabel, 1) > 700)
+                resumeLabel = resumeLabel.substr(0, 50) + "...";
+            canvas.Text(55, 82, resumeLabel, 1, 0xFF55FF88);
+        }
+
+        canvas.Fill(1160, 130, 90, 80, 0xFF2A2D40);
+        canvas.Text(1185, 160, "UP", 2, 0xFFFFFFFF);
+
+        canvas.Fill(1160, 570, 90, 80, 0xFF2A2D40);
+        canvas.Text(1175, 600, "DOWN", 2, 0xFFFFFFFF);
+
+        int total = (int)entries.size();
+        std::string countStr = std::to_string(scrollOffset + 1) + "-" +
+            std::to_string(std::min(scrollOffset + maxVisible, total)) + "/" + std::to_string(total);
+        canvas.Text(1165, 360, countStr, 1, 0xFFAAAAAA);
+
+        for (int i = 0; i < maxVisible; i++)
+        {
+            int idx = scrollOffset + i;
+            if (idx >= total) break;
+            const auto& item = entries[idx];
+
+            int y = startY + i * itemH;
+            uint32_t bg = (idx % 2 == 0) ? 0xFF1B1C28 : 0xFF222433;
+            canvas.Fill(40, y, 1100, itemH - 4, bg);
+
+            std::string label = item.display;
+            if (Canvas::TextWidth(label, 2) > 1060)
+            {
+                while (!label.empty() && Canvas::TextWidth(label + "...", 2) > 1060)
+                    label.pop_back();
+                label += "...";
+            }
+            canvas.Text(55, y + 10, label, 2, item.color);
+        }
+
+        void* pixels = nullptr;
+        int pitch = 0;
+        if (SDL_LockTexture(tex, nullptr, &pixels, &pitch) == 0)
+        {
+            memcpy(pixels, canvas.px.data(), 1280 * 720 * 4);
+            SDL_UnlockTexture(tex);
+        }
+        SDL_RenderClear(renderer);
+        SDL_RenderCopy(renderer, tex, nullptr, nullptr);
+        SDL_RenderPresent(renderer);
+
+        SDL_Delay(16);
+    }
+
+    SDL_DestroyTexture(tex);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+
+    if (!chosenRom.empty())
+    {
+        if (FILE* f = fopen(lastRomFile.c_str(), "w"))
+        {
+            fprintf(f, "%s\n", chosenRom.c_str());
+            fclose(f);
+        }
+    }
+    return chosenRom;
+}
+#endif
+
 int main(int argc, char** argv)
 {
     Options opt;
 #ifdef __ANDROID__
-    // Started from the app icon: the ROM is packed in the APK, the save and the settings
-    // go in the app's own storage.
     std::vector<std::string> androidArgs;
     std::vector<char*> androidArgv;
     if (argc < 2)
     {
         const char* dir = SDL_AndroidGetInternalStoragePath();
-        // Files the emulator core keeps by relative name go there too.
         if (dir) chdir(dir);
-        // Messages go to log.txt (Android drops them otherwise), with the frame timing,
-        // for bug reports: in the app's folder on the shared storage
-        // (Android/data/io.github.clickingmaster.ssrecomp/files), which a file manager or
-        // a PC over USB can open, or else beside the save.
         const char* ext = SDL_AndroidGetExternalStoragePath();
         if (!ext || !freopen((std::string(ext) + "/log.txt").c_str(), "w", stderr))
             freopen("log.txt", "w", stderr);
         setvbuf(stderr, nullptr, _IOLBF, 0);
         setenv("SSR_PERF", "1", 0);
-        androidArgs = { "ssrecomp", "rom.nds", "--save", std::string(dir ? dir : ".") + "/soulsilver.sav", "--fullscreen" };
+
+        std::string stateDir = ext ? ext : (dir ? dir : ".");
+        std::string chosen = PickRomScreen("/storage/emulated/0", stateDir);
+        if (chosen.empty()) return 0;
+
+        char code[5] = {};
+        if (FILE* f = fopen(chosen.c_str(), "rb"))
+        {
+            if (fseek(f, 0x0C, SEEK_SET) == 0) (void)fread(code, 1, 4, f);
+            fclose(f);
+        }
+        std::string foundCode = code;
+        std::string saveName = foundCode.empty() ? "game.sav" : (foundCode + ".sav");
+        std::string savePath = stateDir + "/" + saveName;
+
+        androidArgs = { "pokemon-ds-wide", chosen, "--save", savePath, "--fullscreen", "--jit" };
+        if (!foundCode.empty() && foundCode != "IPGE" && foundCode != "IPKE")
+        {
+            androidArgs.push_back("--funcs");
+            androidArgs.push_back("data/funcs/" + foundCode + ".txt");
+        }
         for (auto& a : androidArgs) androidArgv.push_back(a.data());
         argc = (int)androidArgv.size();
         argv = androidArgv.data();
@@ -1520,13 +1958,41 @@ int main(int argc, char** argv)
     if (rom.empty())
     {
         fprintf(stderr, "cannot read ROM: %s\n", opt.rom.c_str());
+#ifdef __ANDROID__
+        ShowMessageScreen("POKEMON DS WIDESCREEN", {
+            "CANNOT READ ROM FILE",
+            "",
+            opt.rom,
+            "",
+            "Please check file path and permissions.",
+            "",
+            "Tap anywhere or press Back to exit"
+        });
+        return 0;
+#else
         return 1;
+#endif
     }
 
     std::vector<uint8_t> sav = ReadFile(opt.save);
     fprintf(stderr, "ROM %s: %zu bytes; save %s: %zu bytes\n", opt.rom.c_str(), rom.size(), opt.save.c_str(), sav.size());
     auto nds = MakeConsole(rom, sav, opt.headless);
-    if (!nds) return 1;
+    if (!nds)
+    {
+#ifdef __ANDROID__
+        ShowMessageScreen("POKEMON DS WIDESCREEN", {
+            "INVALID ROM FILE",
+            "",
+            "The ROM was rejected by the core.",
+            "Make sure it is an unmodified .nds ROM.",
+            "",
+            "Tap anywhere or press Back to exit"
+        });
+        return 0;
+#else
+        return 1;
+#endif
+    }
 #ifdef __SWITCH__
     if (UseJit) fprintf(stderr, "[switch] fast memory: %s\n", UseFastMem ? "on" : "off");
 #endif

@@ -18,6 +18,11 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#ifdef __APPLE__
+#include <SDL.h>
+#else
+#include <SDL2/SDL.h>
+#endif
 
 #include "ndsoverlays.h"
 
@@ -41,9 +46,27 @@ public:
 
     bool Load(const std::string& path)
     {
-        std::ifstream f(path);
+        std::string content;
+        if (SDL_RWops* rw = SDL_RWFromFile(path.c_str(), "rb"))
+        {
+            Sint64 len = SDL_RWsize(rw);
+            if (len > 0)
+            {
+                content.resize((size_t)len);
+                SDL_RWread(rw, content.data(), 1, (size_t)len);
+            }
+            SDL_RWclose(rw);
+        }
+        else
+        {
+            std::ifstream f(path);
+            if (f.is_open())
+                content.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        }
+        if (content.empty()) return false;
+        std::istringstream stream(content);
         std::string line;
-        while (std::getline(f, line))
+        while (std::getline(stream, line))
         {
             std::istringstream ss(line);
             std::string addr, kind, module, first, name;

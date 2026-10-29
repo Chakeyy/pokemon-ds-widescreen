@@ -220,7 +220,15 @@ def build(skeleton, abi, libmain, libsdl, rom, key_path, out):
             write_aligned(z, item.filename, data, not stored, 4)
         for path, name in ((libsdl, f'lib/{abi}/libSDL2.so'), (libmain, f'lib/{abi}/libmain.so')):
             write_aligned(z, name, open(path, 'rb').read(), True, 4)
-        write_aligned(z, 'assets/rom.nds', open(rom, 'rb').read(), True, 4)
+        if rom and os.path.isfile(rom):
+            write_aligned(z, 'assets/rom.nds', open(rom, 'rb').read(), True, 4)
+        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data')
+        if os.path.isdir(data_dir):
+            for root, dirs, files in os.walk(data_dir):
+                for f in sorted(files):
+                    full_path = os.path.join(root, f)
+                    rel_path = os.path.relpath(full_path, os.path.dirname(data_dir))
+                    write_aligned(z, f'assets/{rel_path}', open(full_path, 'rb').read(), True, 4)
     signed = sign_v2(open(tmp, 'rb').read(), load_key(key_path))
     with open(out, 'wb') as f:
         f.write(signed)
